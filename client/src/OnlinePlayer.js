@@ -6,7 +6,9 @@ export default class OnlinePlayer extends Phaser.GameObjects.Sprite {
 
         this.scene.add.existing(this);
         this.scene.physics.world.enableBody(this);
-        this.scene.physics.add.collider(this, config.worldLayer);
+        if (config.worldLayer) {
+            this.scene.physics.add.collider(this, config.worldLayer);
+        }
 
         this.setTexture("players", "bob_front.png").setScale(1.9, 2.1);
 

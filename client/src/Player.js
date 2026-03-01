@@ -110,8 +110,57 @@ export default class Player extends Phaser.GameObjects.Sprite {
         this.scene.map.findObject("Doors", obj => {
             if ((this.y >= obj.y && this.y <= (obj.y + obj.height)) && (this.x >= obj.x && this.x <= (obj.x + obj.width))) {
                 console.log('Player is by ' + obj.name);
-                if (this.spacebar.isDown) {
-                    console.log('Door is open!')
+                if (!this.canChangeMap) return;
+                if (Phaser.Input.Keyboard.JustDown(this.spacebar)) {
+                    const targetMapProp = obj.properties && obj.properties.find((p) => p.name === 'targetMap');
+                    const targetSceneProp = obj.properties && obj.properties.find((p) => p.name === 'targetScene');
+                    const targetXProp = obj.properties && obj.properties.find((p) => p.name === 'targetX');
+                    const targetYProp = obj.properties && obj.properties.find((p) => p.name === 'targetY');
+                    const playerTexturePositionProp = obj.properties && obj.properties.find((p) => p.name === 'playerTexturePosition');
+
+                    let targetScene = targetSceneProp && targetSceneProp.value;
+                    let targetMap = targetMapProp && targetMapProp.value;
+
+                    if (!targetScene && !targetMap && this.scene.mapName === 'town') {
+                        if (obj.name === 'DoorA') targetScene = 'house1';
+                        if (obj.name === 'DoorB') targetScene = 'house2';
+                    }
+
+                    if (!targetScene && !targetMap) {
+                        console.warn('Door missing targetMap/targetScene property:', obj.name);
+                        return;
+                    }
+
+                    this.canChangeMap = false;
+                    const playerTexturePosition = (playerTexturePositionProp && playerTexturePositionProp.value) || 'front';
+                    if (targetScene) {
+                        this.scene.scene.start(targetScene, {
+                            returnMap: this.scene.mapName,
+                            returnPlayerTexturePosition: playerTexturePosition,
+                        });
+                    } else {
+                        this.scene.registry.destroy();
+                        this.scene.events.off();
+                        this.scene.scene.restart({
+                            map: targetMap,
+                            playerTexturePosition: playerTexturePosition,
+                        });
+
+                        room
+                            .then((room) => room && room.send(
+                                "PLAYER_CHANGED_MAP",
+                                { map: targetMap }
+                            ))
+                            .catch(() => {});
+                    }
+
+                    if (!targetScene && targetXProp && targetYProp) {
+                        this.x = targetXProp.value;
+                        this.y = targetYProp.value;
+                    }
+                    setTimeout(() => {
+                        this.canChangeMap = true;
+                    }, 500);
                 }
             }
         });
@@ -119,23 +168,48 @@ export default class Player extends Phaser.GameObjects.Sprite {
 
     worldInteraction() {
         this.scene.map.findObject("Worlds", world => {
-            if ((this.y >= world.y && this.y <= (world.y + world.height)) && (this.x >= world.x && this.x <= (world.x + world.width))) {
-                console.log('Player is by world entry: ' + world.name);
+            // Use physics body bounds for accurate detection (body can reach map edges even when sprite center can't)
+            const bodyOverlaps =
+                this.body.right  > world.x &&
+                this.body.left   < world.x + world.width &&
+                this.body.bottom > world.y &&
+                this.body.top    < world.y + world.height;
 
-                // Get playerTexturePosition from from Worlds object property
+            // Only trigger if pressing toward the zone (cursor keys, not velocity — physics zeros velocity at world bounds)
+            const zoneCenterY = world.y + world.height / 2;
+            const zoneCenterX = world.x + world.width / 2;
+            const mapMidY = this.scene.map.heightInPixels / 2;
+            const mapMidX = this.scene.map.widthInPixels / 2;
+            const movingToward =
+                (zoneCenterY > mapMidY && this.cursors.down.isDown) ||
+                (zoneCenterY < mapMidY && this.cursors.up.isDown) ||
+                (zoneCenterX > mapMidX && this.cursors.right.isDown) ||
+                (zoneCenterX < mapMidX && this.cursors.left.isDown);
+
+            if (bodyOverlaps && movingToward) {
+                if (!this.canChangeMap) return;
+                console.log('Player is by world entry: ' + world.name);
+                this.canChangeMap = false;
+
+                // Get playerTexturePosition from Worlds object property
                 let playerTexturePosition;
                 if (world.properties) playerTexturePosition = world.properties.find((property) => property.name === 'playerTexturePosition');
                 if (playerTexturePosition) this.playerTexturePosition = playerTexturePosition.value;
 
-                // Load new level (tiles map)
-                this.scene.registry.destroy();
-                this.scene.events.off();
-                this.scene.scene.restart({map: world.name, playerTexturePosition: this.playerTexturePosition});
+                const fromMap = this.scene.mapName;
+                const targetMap = world.name;
+                const texturePos = this.playerTexturePosition;
 
-                room.then((room) => room.send(
-                     "PLAYER_CHANGED_MAP",{
-                    map: world.name
-                }));
+                // Pokemon-style: fade to black, then switch map
+                this.scene.cameras.main.fadeOut(350, 0, 0, 0, (cam, progress) => {
+                    if (progress < 1) return;
+                    room.then((r) => r && r.send("PLAYER_CHANGED_MAP", { map: targetMap })).catch(() => {});
+                    this.scene.registry.destroy();
+                    this.scene.events.off();
+                    this.scene.scene.restart({ map: targetMap, playerTexturePosition: texturePos, fromMap });
+                });
+
+                setTimeout(() => { this.canChangeMap = true; }, 1200);
             }
         });
     }

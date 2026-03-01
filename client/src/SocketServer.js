@@ -3,7 +3,7 @@ import * as Colyseus from "colyseus.js";
 /*================================================
 | Array with current online players
 */
-let onlinePlayers = [];
+let onlinePlayers = {};
 
 /*================================================
 | Colyseus connection with server
@@ -14,6 +14,7 @@ let room = client.joinOrCreate("poke_world").then(room => {
     return room
 }).catch(e => {
     console.log("JOIN ERROR", e);
+    throw e;
 });
 
 export {onlinePlayers, room};
