@@ -26,18 +26,57 @@ export class Scene2 extends Phaser.Scene {
     }
 
     create() {
+        // Scene restarts on map changes; onlinePlayers is a shared module object.
+        // Clear any stale remote sprites from the previous Scene2 instance.
+        Object.keys(onlinePlayers).forEach((id) => {
+            try {
+                if (onlinePlayers[id] && typeof onlinePlayers[id].destroy === 'function') {
+                    onlinePlayers[id].destroy();
+                }
+            } catch (e) {
+                // ignore
+            }
+            delete onlinePlayers[id];
+        });
+
         room
             .then((room) => {
                 if (!room || typeof room.onMessage !== 'function') {
                     console.error('Room not available or missing onMessage handler', room);
                     return;
                 }
-                room.onMessage((data) => {
-                    if (data.event === 'CURRENT_PLAYERS') {
+                room.onMessage("*", (type, message) => {
+                    const data = message || {};
+                    const event = data.event || type;
+
+                    const ensureRemotePlayer = () => {
+                        const existing = onlinePlayers[data.sessionId];
+                        const invalid =
+                            !existing ||
+                            !existing.scene ||
+                            existing.scene !== this ||
+                            !existing.anims;
+
+                        if (invalid) {
+                            if (existing && typeof existing.destroy === 'function') {
+                                try { existing.destroy(); } catch (e) {}
+                            }
+                            onlinePlayers[data.sessionId] = new OnlinePlayer({
+                                scene: this,
+                                playerId: data.sessionId,
+                                key: data.sessionId,
+                                map: data.map,
+                                x: data.x,
+                                y: data.y
+                            });
+                        }
+                    };
+
+                    if (event === 'CURRENT_PLAYERS') {
                         console.log('CURRENT_PLAYERS');
 
-                        Object.keys(data.players).forEach(playerId => {
-                            let player = data.players[playerId];
+                        Object.keys(data.players || {}).forEach(playerId => {
+                            const player = data.players[playerId];
 
                             if (playerId !== room.sessionId) {
                                 onlinePlayers[player.sessionId] = new OnlinePlayer({
@@ -51,7 +90,8 @@ export class Scene2 extends Phaser.Scene {
                             }
                         })
                     }
-                    if (data.event === 'PLAYER_JOINED') {
+
+                    if (event === 'PLAYER_JOINED') {
                         console.log('PLAYER_JOINED');
 
                         if (!onlinePlayers[data.sessionId]) {
@@ -65,7 +105,8 @@ export class Scene2 extends Phaser.Scene {
                             });
                         }
                     }
-                    if (data.event === 'PLAYER_LEFT') {
+
+                    if (event === 'PLAYER_LEFT') {
                         console.log('PLAYER_LEFT');
 
                         if (onlinePlayers[data.sessionId]) {
@@ -73,53 +114,33 @@ export class Scene2 extends Phaser.Scene {
                             delete onlinePlayers[data.sessionId];
                         }
                     }
-                    if (data.event === 'PLAYER_MOVED') {
-                        //console.log('PLAYER_MOVED');
 
-                        // If player is in same map
+                    if (event === 'PLAYER_MOVED') {
+                        // Ensure remote player exists (and isn't a stale destroyed sprite from a previous scene)
+                        ensureRemotePlayer();
+
+                        // Only animate if player is in same map
                         if (this.mapName === onlinePlayers[data.sessionId].map) {
-
-                            // If player isn't registered in this scene (map changing bug..)
-                            if (!onlinePlayers[data.sessionId].scene) {
-                                onlinePlayers[data.sessionId] = new OnlinePlayer({
-                                    scene: this,
-                                    playerId: data.sessionId,
-                                    key: data.sessionId,
-                                    map: data.map,
-                                    x: data.x,
-                                    y: data.y
-                                });
-                            }
-                            // Start animation and set sprite position
                             onlinePlayers[data.sessionId].isWalking(data.position, data.x, data.y);
                         }
                     }
-                    if (data.event === 'PLAYER_MOVEMENT_ENDED') {
-                        // If player is in same map
-                        if (this.mapName === onlinePlayers[data.sessionId].map) {
 
-                            // If player isn't registered in this scene (map changing bug..)
-                            if (!onlinePlayers[data.sessionId].scene) {
-                                onlinePlayers[data.sessionId] = new OnlinePlayer({
-                                    scene: this,
-                                    playerId: data.sessionId,
-                                    key: data.sessionId,
-                                    map: data.map,
-                                    x: data.x,
-                                    y: data.y
-                                });
-                            }
-                            // Stop animation & set sprite texture
+                    if (event === 'PLAYER_MOVEMENT_ENDED') {
+                        ensureRemotePlayer();
+
+                        if (this.mapName === onlinePlayers[data.sessionId].map) {
                             onlinePlayers[data.sessionId].stopWalking(data.position)
                         }
                     }
-                    if (data.event === 'PLAYER_CHANGED_MAP') {
+
+                    if (event === 'PLAYER_CHANGED_MAP') {
                         console.log('PLAYER_CHANGED_MAP');
 
                         if (onlinePlayers[data.sessionId]) {
                             onlinePlayers[data.sessionId].destroy();
+                            delete onlinePlayers[data.sessionId];
 
-                            if (data.map === this.mapName && !onlinePlayers[data.sessionId].scene) {
+                            if (data.map === this.mapName) {
                                 onlinePlayers[data.sessionId] = new OnlinePlayer({
                                     scene: this,
                                     playerId: data.sessionId,
@@ -131,7 +152,7 @@ export class Scene2 extends Phaser.Scene {
                             }
                         }
                     }
-                })
+                });
             })
             .catch((e) => {
                 console.error('Failed to join room', e);
