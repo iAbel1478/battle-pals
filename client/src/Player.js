@@ -12,11 +12,15 @@ export default class Player extends Phaser.GameObjects.Sprite {
 
         this.setTexture("currentPlayer", `misa-${this.scene.playerTexturePosition}`);
 
+        this.setScale(1);
+
         // Register cursors for player movement
         this.cursors = this.scene.input.keyboard.createCursorKeys();
 
         // Player Offset
-        this.body.setOffset(0, 24);
+        const footOffset = 24;
+        this.body.setSize(this.width, this.height - footOffset, true);
+        this.body.setOffset(0, footOffset);
 
         // Player can't go out of the world
         this.body.setCollideWorldBounds(true)
@@ -33,7 +37,7 @@ export default class Player extends Phaser.GameObjects.Sprite {
         this.canChangeMap = true;
 
         // Player nickname text
-        this.playerNickname = this.scene.add.text((this.x - this.width * 1.4), (this.y - (this.height / 2)), 'Player');
+        this.playerNickname = this.scene.add.text((this.x - this.displayWidth * 0.7), (this.y - (this.displayHeight / 2)), 'Player');
 
         // Add spacebar input
         this.spacebar = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
@@ -93,7 +97,7 @@ export default class Player extends Phaser.GameObjects.Sprite {
 
     showPlayerNickname() {
         this.playerNickname.x = this.x - (this.playerNickname.width / 2);
-        this.playerNickname.y = this.y - (this.height / 2);
+        this.playerNickname.y = this.y - (this.displayHeight / 2);
     }
 
     isMoved() {

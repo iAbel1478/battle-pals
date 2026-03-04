@@ -4,12 +4,37 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-      html, body { height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden; }
+      html, body { height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden; background: #000; }
       #game-container { height: 100%; width: 100%; }
       canvas { display: block; }
+      #hud-overlay { position: fixed; top: 12px; right: 12px; z-index: 999999; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; color: #111; image-rendering: pixelated; -webkit-font-smoothing: none; font-smooth: never; text-rendering: geometricPrecision; font-weight: 800; }
+      #hud-overlay .panel { background: #f7f7d7; border: 4px solid #1b1b1b; padding: 10px 10px; margin-bottom: 10px; min-width: 230px; box-shadow: 6px 6px 0 #1b1b1b; }
+      #hud-overlay .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      #hud-overlay .title { font-weight: 900; font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase; margin-bottom: 8px; color: #1b1b1b; text-shadow: 1px 0 0 rgba(0,0,0,0.25), -1px 0 0 rgba(0,0,0,0.25), 0 1px 0 rgba(0,0,0,0.25), 0 -1px 0 rgba(0,0,0,0.25); }
+      #hud-overlay .hint { font-weight: 800; font-size: 12px; margin-top: 8px; color: #2b2b2b; letter-spacing: 0.02em; text-shadow: 1px 0 0 rgba(0,0,0,0.16), -1px 0 0 rgba(0,0,0,0.16), 0 1px 0 rgba(0,0,0,0.16), 0 -1px 0 rgba(0,0,0,0.16); }
+      #hud-overlay button { font-family: inherit; font-weight: 900; font-size: 14px; padding: 8px 10px; cursor: pointer; border: 3px solid #1b1b1b; background: #ffffff; box-shadow: 3px 3px 0 #1b1b1b; letter-spacing: 0.02em; text-shadow: 1px 0 0 rgba(0,0,0,0.18), -1px 0 0 rgba(0,0,0,0.18), 0 1px 0 rgba(0,0,0,0.18), 0 -1px 0 rgba(0,0,0,0.18); }
+      #hud-overlay button:hover { background: #fff3a6; }
+      #hud-overlay button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #1b1b1b; }
+      #hud-overlay .legend { font-weight: 800; font-size: 13px; line-height: 1.35; white-space: pre-line; letter-spacing: 0.01em; text-shadow: 1px 0 0 rgba(0,0,0,0.12), -1px 0 0 rgba(0,0,0,0.12), 0 1px 0 rgba(0,0,0,0.12), 0 -1px 0 rgba(0,0,0,0.12); }
     </style>
   </head>
   <body>
     <div id="game-container"></div>
+    <div id="hud-overlay" aria-label="Game HUD">
+      <div class="panel">
+        <div class="title">View</div>
+        <div class="row">
+          <button id="zoom-toggle" type="button">Zoom: 2x</button>
+        </div>
+        <div class="hint">Tip: Click to zoom out for navigation</div>
+      </div>
+      <div class="panel">
+        <div class="title">Controls</div>
+        <div class="legend" id="legend-text">Arrow keys: move
+SPACE: doors / exit
+E: battle nearby
+F: fullscreen</div>
+      </div>
+    </div>
   </body>
 </html>

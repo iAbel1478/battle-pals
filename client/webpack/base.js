@@ -9,15 +9,16 @@ module.exports = {
   entry: "./src/index.js",
   output: {
     path: path.resolve(__dirname, "../dist"),
-    publicPath: "./",
+    publicPath: "/",
     filename: "bundle.js",
   },
   devServer: {
+    historyApiFallback: true,
     static: {
-      directory: path.resolve(__dirname, "../dist"),
+      directory: path.resolve(__dirname, ".."),
     },
     compress: true,
-    port: 8084,
+    port: 3001,
   },
   module: {
     rules: [

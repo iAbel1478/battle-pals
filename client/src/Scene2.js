@@ -23,6 +23,11 @@ export class Scene2 extends Phaser.Scene {
 
         // Set container
         this.container = [];
+
+        if (this.monsterWanderTimer) {
+            this.monsterWanderTimer.remove(false);
+            this.monsterWanderTimer = null;
+        }
     }
 
     create() {
@@ -185,6 +190,257 @@ export class Scene2 extends Phaser.Scene {
         this.grassLayer = this.map.createLayer("Grass", tileset, 0, 0);
         this.aboveLayer = this.map.createLayer("Above Player", tileset, 0, 0);
 
+        const autoFillLayerHoles = (layer) => {
+            if (!layer || !layer.tilemapLayer || !layer.layer || !layer.layer.data) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+
+            // Identify background-like tiles by frequency (grass/ground variants tend to dominate).
+            // We intentionally do NOT rely on tile properties here because many decorative tiles
+            // (tree tops, statue tops, roof backs) often have no collision properties.
+            const countsAll = new Map();
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const t = layer.getTileAt(x, y);
+                    if (!t || typeof t.index !== 'number' || t.index < 0) continue;
+                    countsAll.set(t.index, (countsAll.get(t.index) || 0) + 1);
+                }
+            }
+            const sortedCounts = Array.from(countsAll.entries()).sort((a, b) => b[1] - a[1]);
+            const backgroundLike = new Set(sortedCounts.slice(0, 30).map(([idx]) => idx));
+            const getTile = (tx, ty) => {
+                if (tx < 0 || ty < 0 || tx >= width || ty >= height) return null;
+                return layer.getTileAt(tx, ty) || null;
+            };
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const existing = layer.getTileAt(x, y);
+
+                    const existingIndex = existing && typeof existing.index === 'number' ? existing.index : null;
+                    const isEmpty = existingIndex === null;
+                    const isBackgroundLike = existingIndex !== null && backgroundLike.has(existingIndex);
+                    if (!isEmpty && !isBackgroundLike) continue;
+
+                    const lT = getTile(x - 1, y);
+                    const rT = getTile(x + 1, y);
+                    const uT = getTile(x, y - 1);
+                    const dT = getTile(x, y + 1);
+                    const ulT = getTile(x - 1, y - 1);
+                    const urT = getTile(x + 1, y - 1);
+                    const dlT = getTile(x - 1, y + 1);
+                    const drT = getTile(x + 1, y + 1);
+
+                    const candidates4 = [lT, rT, uT, dT]
+                        .filter((t) => t && typeof t.index === 'number' && t.index >= 0 && !backgroundLike.has(t.index))
+                        .map((t) => t.index);
+                    const candidates8 = [lT, rT, uT, dT, ulT, urT, dlT, drT]
+                        .filter((t) => t && typeof t.index === 'number' && t.index >= 0 && !backgroundLike.has(t.index))
+                        .map((t) => t.index);
+                    if (candidates8.length < 2) continue;
+
+                    const pickMajority = (arr, minCount, minRatio) => {
+                        const counts = new Map();
+                        for (const v of arr) counts.set(v, (counts.get(v) || 0) + 1);
+                        let best = null;
+                        let bestCount = 0;
+                        for (const [k, c] of counts.entries()) {
+                            if (c > bestCount) {
+                                best = k;
+                                bestCount = c;
+                            }
+                        }
+                        if (best === null) return null;
+                        if (bestCount < minCount) return null;
+                        if (bestCount / arr.length < minRatio) return null;
+                        return best;
+                    };
+
+                    // Prefer strict 4-neighbor fill (very safe)
+                    const best4 = candidates4.length >= 3 ? pickMajority(candidates4, 3, 1.0) : null;
+                    if (best4 !== null) {
+                        layer.putTileAt(best4, x, y);
+                        continue;
+                    }
+
+                    // Fallback: 8-neighbor majority (catches diagonal-only tree gaps)
+                    const best8 = pickMajority(candidates8, 2, 0.4);
+                    if (best8 !== null) {
+                        layer.putTileAt(best8, x, y);
+                        continue;
+                    }
+
+                    const candidatesR2 = [];
+                    for (let oy = -2; oy <= 2; oy++) {
+                        for (let ox = -2; ox <= 2; ox++) {
+                            if (ox === 0 && oy === 0) continue;
+                            const t = getTile(x + ox, y + oy);
+                            if (!t || typeof t.index !== 'number' || t.index < 0) continue;
+                            if (backgroundLike.has(t.index)) continue;
+                            candidatesR2.push(t.index);
+                        }
+                    }
+
+                    const bestR2 = candidatesR2.length >= 3 ? pickMajority(candidatesR2, 3, 0.25) : null;
+                    if (bestR2 !== null) {
+                        layer.putTileAt(bestR2, x, y);
+                    }
+                }
+            }
+        };
+
+        for (let pass = 0; pass < 15; pass++) {
+            autoFillLayerHoles(this.belowLayer);
+            autoFillLayerHoles(this.worldLayer);
+            autoFillLayerHoles(this.grassLayer);
+            autoFillLayerHoles(this.aboveLayer);
+        }
+
+        const pruneLonelyStructureTiles = (layer) => {
+            if (!layer || !layer.layer || !layer.layer.data) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+
+            const countsAll = new Map();
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const t = layer.getTileAt(x, y);
+                    if (!t || typeof t.index !== 'number' || t.index < 0) continue;
+                    countsAll.set(t.index, (countsAll.get(t.index) || 0) + 1);
+                }
+            }
+            const sortedCounts = Array.from(countsAll.entries()).sort((a, b) => b[1] - a[1]);
+            const backgroundLike = new Set(sortedCounts.slice(0, 20).map(([idx]) => idx));
+
+            const getTile = (tx, ty) => {
+                if (tx < 0 || ty < 0 || tx >= width || ty >= height) return null;
+                return layer.getTileAt(tx, ty) || null;
+            };
+
+            const toRemove = [];
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const t = layer.getTileAt(x, y);
+                    if (!t || typeof t.index !== 'number' || t.index < 0) continue;
+                    if (backgroundLike.has(t.index)) continue;
+
+                    const neighbors = [
+                        getTile(x - 1, y), getTile(x + 1, y),
+                        getTile(x, y - 1), getTile(x, y + 1),
+                        getTile(x - 1, y - 1), getTile(x + 1, y - 1),
+                        getTile(x - 1, y + 1), getTile(x + 1, y + 1),
+                    ].filter((n) => n && typeof n.index === 'number' && n.index >= 0 && !backgroundLike.has(n.index));
+
+                    // If a structure-like tile is basically isolated, it's usually a stray cut-off tree/top.
+                    if (neighbors.length <= 1) {
+                        toRemove.push({ x, y });
+                    }
+                }
+            }
+
+            toRemove.forEach(({ x, y }) => layer.removeTileAt(x, y));
+        };
+
+        // Remove stray single-tile artifacts (commonly cut tree fragments).
+        pruneLonelyStructureTiles(this.grassLayer);
+        pruneLonelyStructureTiles(this.aboveLayer);
+
+        const mostCommonTileIndex = (layer) => {
+            if (!layer || !layer.layer || !layer.layer.data) return null;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+            const counts = new Map();
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const t = layer.getTileAt(x, y);
+                    if (!t || typeof t.index !== 'number' || t.index < 0) continue;
+                    counts.set(t.index, (counts.get(t.index) || 0) + 1);
+                }
+            }
+            let best = null;
+            let bestCount = 0;
+            for (const [idx, c] of counts.entries()) {
+                if (c > bestCount) {
+                    best = idx;
+                    bestCount = c;
+                }
+            }
+            return best;
+        };
+
+        const setBottomRowsToIndex = (layer, rows, index) => {
+            if (!layer || !layer.layer || !layer.layer.data || index === null) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+            const startY = Math.max(0, height - rows);
+            for (let y = startY; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    layer.putTileAt(index, x, y);
+                }
+            }
+        };
+
+        const setTopRowsToIndex = (layer, rows, index) => {
+            if (!layer || !layer.layer || !layer.layer.data || index === null) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+            const endY = Math.min(height, rows);
+            for (let y = 0; y < endY; y++) {
+                for (let x = 0; x < width; x++) {
+                    layer.putTileAt(index, x, y);
+                }
+            }
+        };
+
+        const clearBottomRows = (layer, rows) => {
+            if (!layer || !layer.layer || !layer.layer.data) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+            const startY = Math.max(0, height - rows);
+            for (let y = startY; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    layer.removeTileAt(x, y);
+                }
+            }
+        };
+
+        const clearTopRows = (layer, rows) => {
+            if (!layer || !layer.layer || !layer.layer.data) return;
+            const width = layer.layer.width;
+            const height = layer.layer.height;
+            const endY = Math.min(height, rows);
+            for (let y = 0; y < endY; y++) {
+                for (let x = 0; x < width; x++) {
+                    layer.removeTileAt(x, y);
+                }
+            }
+        };
+
+        if (this.mapName === 'route1') {
+            const baseGrass = mostCommonTileIndex(this.belowLayer);
+            const bottomBandRows = 6;
+            setBottomRowsToIndex(this.belowLayer, bottomBandRows, baseGrass);
+            setBottomRowsToIndex(this.worldLayer, bottomBandRows, baseGrass);
+
+            // No bushes / no leftover tree tops in the bottom band.
+            clearBottomRows(this.grassLayer, bottomBandRows);
+            clearBottomRows(this.aboveLayer, bottomBandRows);
+        }
+
+        if (this.mapName === 'city2') {
+            const baseGrass = mostCommonTileIndex(this.belowLayer);
+            const edgeBandRows = 6;
+
+            setTopRowsToIndex(this.belowLayer, edgeBandRows, baseGrass);
+            setTopRowsToIndex(this.worldLayer, edgeBandRows, baseGrass);
+            clearTopRows(this.grassLayer, edgeBandRows);
+            clearTopRows(this.aboveLayer, edgeBandRows);
+
+            setBottomRowsToIndex(this.belowLayer, edgeBandRows, baseGrass);
+            setBottomRowsToIndex(this.worldLayer, edgeBandRows, baseGrass);
+            clearBottomRows(this.grassLayer, edgeBandRows);
+            clearBottomRows(this.aboveLayer, edgeBandRows);
+        }
+
         this.worldLayer.setCollisionByProperty({collides: true});
 
         // By default, everything gets depth sorted on the screen in the order we created things. Here, we
@@ -212,23 +468,61 @@ export class Scene2 extends Phaser.Scene {
         const camera = this.cameras.main;
         camera.startFollow(this.player);
         camera.setBounds(0, 0, this.map.widthInPixels, this.map.heightInPixels);
+        const computeFitZoom = () => {
+            const minZoomX = this.scale.width / this.map.widthInPixels;
+            const minZoomY = this.scale.height / this.map.heightInPixels;
+            return Math.max(minZoomX, minZoomY);
+        };
+
+        const zoomIn = 2;
+        const zoomOut = computeFitZoom();
+        const savedZoomMode = this.registry.get('cameraZoomMode');
+        const initialMode = savedZoomMode === 'out' ? 'out' : 'in';
+        camera.setZoom(initialMode === 'out' ? zoomOut : zoomIn);
+
+        const zoomToggleEl = document.getElementById('zoom-toggle');
+        const legendEl = document.getElementById('legend-text');
+        const setZoomLabel = () => {
+            if (!zoomToggleEl) return;
+            const outNow = Math.abs(camera.zoom - zoomOut) < 0.0001;
+            zoomToggleEl.textContent = outNow ? 'Zoom: OUT' : 'Zoom: IN';
+        };
+
+        setZoomLabel();
+
+        if (legendEl) {
+            const mapLabel = this.mapName === 'town' ? 'Pallet Town' : this.mapName === 'route1' ? 'Route 1' : this.mapName === 'city2' ? 'Viridian City' : this.mapName === 'city3' ? 'Slate City' : this.mapName;
+            legendEl.textContent = `Map: ${mapLabel}\nArrow keys: move\nSPACE: doors / exit\nE: battle nearby\nF: fullscreen`;
+        }
+
+        this.onZoomToggleClick = () => {
+            const outNow = Math.abs(camera.zoom - zoomOut) < 0.0001;
+            const nextMode = outNow ? 'in' : 'out';
+            const nextZoom = nextMode === 'out' ? computeFitZoom() : zoomIn;
+            camera.setZoom(nextZoom);
+            this.registry.set('cameraZoomMode', nextMode);
+            setZoomLabel();
+        };
+
+        if (zoomToggleEl) {
+            zoomToggleEl.removeEventListener('click', this.onZoomToggleClick);
+            zoomToggleEl.addEventListener('click', this.onZoomToggleClick);
+        }
+
+        this.scale.on('resize', () => {
+            const mode = this.registry.get('cameraZoomMode') === 'out' ? 'out' : 'in';
+            if (mode === 'out') {
+                camera.setZoom(computeFitZoom());
+            }
+            setZoomLabel();
+        });
 
         cursors = this.input.keyboard.createCursorKeys();
         this.battleKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
 
-        // Help text that has a "fixed" position on the screen
-        const mapLabel = this.mapName === 'town' ? 'Pallet Town' : this.mapName === 'route1' ? 'Route 1' : this.mapName === 'city2' ? 'Viridian City' : this.mapName === 'city3' ? 'Slate City' : this.mapName;
-        this.add
-            .text(16, 16, `[${mapLabel}]\nArrow keys to move\nSPACE: doors / exit house\nE: battle nearby NPC\nF: fullscreen | D: hitboxes`, {
-                font: "18px monospace",
-                fill: "#000000",
-                padding: {x: 20, y: 10},
-                backgroundColor: "#ffffff"
-            })
-            .setScrollFactor(0)
-            .setDepth(30);
-
         this.npcs = [];
+        this.monsters = [];
+        this.monsterGroup = this.physics.add.group();
         if (this.mapName === 'town') {
             this.createNpcs();
         } else if (this.mapName === 'route1') {
@@ -238,6 +532,15 @@ export class Scene2 extends Phaser.Scene {
         } else if (this.mapName === 'city3') {
             this.createCity3Npcs();
         }
+
+        this.playerMonsterCollider = this.physics.add.collider(this.player, this.monsterGroup);
+
+        this.events.once('shutdown', () => {
+            if (this.playerMonsterCollider) this.playerMonsterCollider.destroy();
+            if (zoomToggleEl && this.onZoomToggleClick) zoomToggleEl.removeEventListener('click', this.onZoomToggleClick);
+        });
+
+        this.startMonsterWander();
 
         this.debugGraphics();
 
@@ -249,22 +552,25 @@ export class Scene2 extends Phaser.Scene {
 
     createRoute1Npcs() {
         // Wild monsters roaming Route 1
-        const route1Monsters = [
-            { name: 'Thornvine', textureKey: 'monstersBase', frame: 24, x: 200, y: 180 },
-            { name: 'Pebblefang', textureKey: 'monstersBase', frame: 36, x: 700, y: 280 },
-            { name: 'Gloomoth', textureKey: 'monstersNyx8', frame: 6,  x: 400, y: 350 },
-            { name: 'Frostpaw', textureKey: 'monstersNyx8', frame: 18, x: 900, y: 200 },
-            { name: 'Cindermaw', textureKey: 'monstersZughy32', frame: 0, x: 550, y: 450 },
-            { name: 'Bogslug',   textureKey: 'monstersZughy32', frame: 12, x: 1050, y: 380 },
+        const route1Spawns = [
+            { x: 200, y: 180 },
+            { x: 700, y: 280 },
+            { x: 400, y: 350 },
+            { x: 900, y: 200 },
+            { x: 550, y: 450 },
+            { x: 1050, y: 380 },
+            { x: 840, y: 420 },
+            { x: 320, y: 220 },
+            { x: 260, y: 460 },
+            { x: 460, y: 240 },
+            { x: 620, y: 520 },
+            { x: 760, y: 160 },
+            { x: 980, y: 460 },
+            { x: 1120, y: 240 },
+            { x: 920, y: 320 },
+            { x: 520, y: 360 },
         ];
-        route1Monsters.forEach((m) => {
-            const sprite = this.physics.add.staticSprite(m.x, m.y, m.textureKey, m.frame);
-            sprite.setDepth(6);
-            sprite.name = m.name;
-            sprite.battleSprite = { textureKey: m.textureKey, frame: m.frame };
-            sprite.isMonster = true;
-            this.npcs.push(sprite);
-        });
+        route1Spawns.forEach((p) => this.createMonster(this.randomMonsterDef(p.x, p.y)));
         // Travelling trainer NPC
         const trainer = this.physics.add.staticSprite(640, 300, 'players', 'boss_right_walk.002.png');
         trainer.setDepth(6);
@@ -286,22 +592,25 @@ export class Scene2 extends Phaser.Scene {
         this.npcs.push(nurse2, gymLeader);
 
         // Stronger monsters in City 2
-        const city2Monsters = [
-            { name: 'Ironclad',   textureKey: 'monstersBase',    frame: 48, x: 250,  y: 200 },
-            { name: 'Voidshade',  textureKey: 'monstersNyx8',    frame: 42, x: 950,  y: 220 },
-            { name: 'Emberstorm', textureKey: 'monstersZughy32', frame: 24, x: 400,  y: 700 },
-            { name: 'Crystalix',  textureKey: 'monstersBase',    frame: 60, x: 800,  y: 700 },
-            { name: 'Tidecaller', textureKey: 'monstersNyx8',    frame: 54, x: 640,  y: 800 },
-            { name: 'Stoneback',  textureKey: 'monstersZughy32', frame: 36, x: 300,  y: 500 },
+        const city2Spawns = [
+            { x: 250,  y: 200 },
+            { x: 950,  y: 220 },
+            { x: 400,  y: 700 },
+            { x: 800,  y: 700 },
+            { x: 640,  y: 800 },
+            { x: 300,  y: 500 },
+            { x: 980,  y: 640 },
+            { x: 520,  y: 540 },
+            { x: 720,  y: 560 },
+            { x: 860,  y: 360 },
+            { x: 560,  y: 260 },
+            { x: 360,  y: 320 },
+            { x: 460,  y: 860 },
+            { x: 920,  y: 820 },
+            { x: 680,  y: 420 },
+            { x: 1040, y: 420 },
         ];
-        city2Monsters.forEach((m) => {
-            const sprite = this.physics.add.staticSprite(m.x, m.y, m.textureKey, m.frame);
-            sprite.setDepth(6);
-            sprite.name = m.name;
-            sprite.battleSprite = { textureKey: m.textureKey, frame: m.frame };
-            sprite.isMonster = true;
-            this.npcs.push(sprite);
-        });
+        city2Spawns.forEach((p) => this.createMonster(this.randomMonsterDef(p.x, p.y)));
         this.autoScaleNpcs();
     }
 
@@ -322,32 +631,146 @@ export class Scene2 extends Phaser.Scene {
         });
 
         // Powerful urban monsters scattered across the city blocks and park
-        const city3Monsters = [
-            { name: 'Neonshade',  textureKey: 'monstersNyx8',    frame: 60, x: 350,  y: 400  },
-            { name: 'Steelclaw', textureKey: 'monstersBase',    frame: 72, x: 900,  y: 300  },
-            { name: 'Smogwing', textureKey: 'monstersZughy32', frame: 48, x: 1280, y: 900  },
-            { name: 'Gravelon', textureKey: 'monstersBase',    frame: 84, x: 1700, y: 1100 },
-            { name: 'Thunderpaw', textureKey: 'monstersNyx8',  frame: 66, x: 600,  y: 1400 },
-            { name: 'Ironveil',  textureKey: 'monstersZughy32',frame: 60, x: 2000, y: 1600 },
-            { name: 'Asphaltus', textureKey: 'monstersBase',   frame: 96, x: 1400, y: 500  },
-            { name: 'Darkspire', textureKey: 'monstersNyx8',   frame: 72, x: 2100, y: 700  },
+        const city3Spawns = [
+            { x: 350,  y: 400 },
+            { x: 900,  y: 300 },
+            { x: 1280, y: 900 },
+            { x: 1700, y: 1100 },
+            { x: 600,  y: 1400 },
+            { x: 2000, y: 1600 },
+            { x: 1400, y: 500 },
+            { x: 2100, y: 700 },
+            { x: 1860, y: 420 },
+            { x: 560,  y: 980 },
+            { x: 1040, y: 1680 },
+            { x: 760,  y: 760 },
+            { x: 1160, y: 520 },
+            { x: 1520, y: 820 },
+            { x: 1760, y: 640 },
+            { x: 420,  y: 1220 },
+            { x: 920,  y: 1240 },
+            { x: 1360, y: 1420 },
+            { x: 1880, y: 1280 },
         ];
-        city3Monsters.forEach((m) => {
-            const sprite = this.physics.add.staticSprite(m.x, m.y, m.textureKey, m.frame);
-            sprite.setDepth(6); sprite.name = m.name;
-            sprite.battleSprite = { textureKey: m.textureKey, frame: m.frame };
-            sprite.isMonster = true;
-            this.npcs.push(sprite);
-        });
+        city3Spawns.forEach((p) => this.createMonster(this.randomMonsterDef(p.x, p.y)));
         this.autoScaleNpcs();
+    }
+
+    randomMonsterDef(x, y) {
+        const sheets = ["monstersBase", "monstersNyx8", "monstersZughy32"];
+        const textureKey = Phaser.Math.RND.pick(sheets);
+        const frame = Phaser.Math.Between(0, 95);
+        const name = `Mob-${textureKey}-${frame}`;
+        return { name, textureKey, frame, x, y };
+    }
+
+    createMonster(m) {
+        const sprite = this.physics.add.sprite(m.x, m.y, m.textureKey, m.frame);
+        sprite.setDepth(6);
+        sprite.name = m.name;
+        sprite.battleSprite = { textureKey: m.textureKey, frame: m.frame };
+        sprite.isMonster = true;
+        sprite.setScale(2);
+        sprite.setImmovable(true);
+        if (sprite.body) {
+            sprite.body.immovable = true;
+            if (typeof sprite.body.setPushable === 'function') {
+                sprite.body.setPushable(false);
+            } else if (Object.prototype.hasOwnProperty.call(sprite.body, 'pushable')) {
+                sprite.body.pushable = false;
+            }
+            if (typeof sprite.body.setMass === 'function') {
+                sprite.body.setMass(1000000);
+            } else if (Object.prototype.hasOwnProperty.call(sprite.body, 'mass')) {
+                sprite.body.mass = 1000000;
+            }
+            sprite.body.setCollideWorldBounds(true);
+            sprite.body.setDrag(260, 260);
+            sprite.body.setMaxVelocity(70, 70);
+            sprite.body.setSize(sprite.width * 0.6, sprite.height * 0.6, true);
+        }
+
+        if (this.worldLayer) {
+            this.physics.add.collider(sprite, this.worldLayer);
+        }
+
+        this.npcs.push(sprite);
+        this.monsters.push(sprite);
+        this.monsterGroup.add(sprite);
+        return sprite;
+    }
+
+    startMonsterWander() {
+        if (this.monsterWanderTimer) {
+            this.monsterWanderTimer.remove(false);
+            this.monsterWanderTimer = null;
+        }
+        if (!this.monsters || this.monsters.length === 0) return;
+
+        const chooseDir = (monster, now) => {
+            const speed = Phaser.Math.Between(18, 46);
+            const diag = Math.round(speed * 0.72);
+            const dirs = [
+                { x: 0, y: 0 },
+                { x: -speed, y: 0 },
+                { x: speed, y: 0 },
+                { x: 0, y: -speed },
+                { x: 0, y: speed },
+                { x: -diag, y: -diag },
+                { x: diag, y: -diag },
+                { x: -diag, y: diag },
+                { x: diag, y: diag },
+            ];
+
+            const pauseChance = 0.25;
+            const pick = Math.random() < pauseChance ? dirs[0] : Phaser.Math.RND.pick(dirs.slice(1));
+            const duration = pick.x === 0 && pick.y === 0
+                ? Phaser.Math.Between(450, 1100)
+                : Phaser.Math.Between(900, 2200);
+
+            monster.setData("wanderUntil", now + duration);
+
+            if (monster.body) {
+                monster.body.setVelocity(pick.x, pick.y);
+            }
+        };
+
+        const now = this.time.now;
+        this.monsters.forEach((m) => {
+            if (!m || !m.active) return;
+            chooseDir(m, now);
+        });
+
+        this.monsterWanderTimer = this.time.addEvent({
+            delay: 300,
+            loop: true,
+            callback: () => {
+                if (!this.monsters) return;
+                const t = this.time.now;
+                this.monsters.forEach((monster) => {
+                    if (!monster || !monster.active || !monster.body) return;
+
+                    const b = monster.body;
+                    const blocked = b.blocked && (b.blocked.left || b.blocked.right || b.blocked.up || b.blocked.down);
+                    const touching = b.touching && (b.touching.left || b.touching.right || b.touching.up || b.touching.down);
+                    const expired = !monster.getData("wanderUntil") || t >= monster.getData("wanderUntil");
+
+                    if (blocked || touching || expired) {
+                        chooseDir(monster, t);
+                    }
+                });
+            },
+        });
     }
 
     autoScaleNpcs() {
         if (this.player && this.player.displayHeight) {
             this.npcs.forEach((npc) => {
+                if (npc && npc.isMonster) return;
                 const baseHeight = npc.displayHeight || npc.height;
                 if (!baseHeight) return;
-                const scale = this.player.displayHeight / baseHeight;
+                const raw = this.player.displayHeight / baseHeight;
+                const scale = Math.max(1, Math.round(raw));
                 npc.setScale(scale);
             });
         }
@@ -365,21 +788,20 @@ export class Scene2 extends Phaser.Scene {
 
         this.npcs.push(nurse, boss);
 
-        const monsters = [
-            { name: 'Emberfox', textureKey: 'monstersBase', frame: 0, x: 460, y: 1120 },
-            { name: 'Mossjaw', textureKey: 'monstersBase', frame: 12, x: 560, y: 1120 },
-            { name: 'Shadebat', textureKey: 'monstersNyx8', frame: 30, x: 640, y: 1120 },
-            { name: 'Lavarock', textureKey: 'monstersZughy32', frame: 42, x: 720, y: 1120 },
+        const townSpawns = [
+            { x: 460, y: 1120 },
+            { x: 560, y: 1120 },
+            { x: 640, y: 1120 },
+            { x: 720, y: 1120 },
+            { x: 520, y: 1060 },
+            { x: 680, y: 1060 },
+            { x: 600, y: 1040 },
+            { x: 740, y: 1040 },
+            { x: 460, y: 1040 },
+            { x: 360, y: 1120 },
         ];
 
-        monsters.forEach((m) => {
-            const sprite = this.physics.add.staticSprite(m.x, m.y, m.textureKey, m.frame);
-            sprite.setDepth(6);
-            sprite.name = m.name;
-            sprite.battleSprite = { textureKey: m.textureKey, frame: m.frame };
-            sprite.isMonster = true;
-            this.npcs.push(sprite);
-        });
+        townSpawns.forEach((p) => this.createMonster(this.randomMonsterDef(p.x, p.y)));
 
         this.autoScaleNpcs();
     }

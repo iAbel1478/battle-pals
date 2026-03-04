@@ -11,7 +11,7 @@ const Config = {
     pixelArt: true,
     backgroundColor: "#000000",
     scale: {
-        mode: Phaser.Scale.FIT,
+        mode: Phaser.Scale.RESIZE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
         width: 800,
         height: 450,
